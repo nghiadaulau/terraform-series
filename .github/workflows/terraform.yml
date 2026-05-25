@@ -1,0 +1,103 @@
+name: terraform
+
+# plan trên pull request, apply khi merge vào production.
+on:
+  pull_request:
+    branches: [production]
+  push:
+    branches: [production]
+
+# OIDC: cấp id-token để đổi lấy credential AWS tạm thời, KHÔNG lưu access key.
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.15.4"
+  AWS_REGION: "ap-southeast-1"
+  WORKING_DIR: "14-vpc-module"
+
+jobs:
+  # Gate chất lượng: fmt, validate, tflint, Trivy, Checkov — chạy trên mọi PR.
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform init + validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+      - name: tflint
+        working-directory: ${{ env.WORKING_DIR }}
+        run: tflint
+
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: ${{ env.WORKING_DIR }}
+          severity: HIGH,CRITICAL # chỉ chặn ở mức cao
+
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ env.WORKING_DIR }}
+
+  # plan trên PR: kết quả đính vào PR để review.
+  plan:
+    needs: quality
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Lấy credential AWS qua OIDC (không dùng access key)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} # role tin GitHub OIDC
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform plan
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform init
+          terraform plan -out=tfplan -no-color
+
+  # apply khi merge vào production.
+  apply:
+    needs: quality
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+    environment: production # cổng phê duyệt thủ công của GitHub Environments
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Lấy credential AWS qua OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform apply
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform init
+          terraform apply -auto-approve -no-color
