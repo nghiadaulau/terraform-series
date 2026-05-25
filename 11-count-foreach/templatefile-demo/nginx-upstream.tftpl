@@ -1,0 +1,5 @@
+upstream backend {
+%{ for addr in ip_addrs ~}
+  server ${addr}:${port};
+%{ endfor ~}
+}
