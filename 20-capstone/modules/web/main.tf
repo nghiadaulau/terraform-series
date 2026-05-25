@@ -66,9 +66,9 @@ resource "aws_lb_listener" "http" {
 }
 
 resource "aws_launch_template" "this" {
-  name_prefix   = "${var.name}-"
-  image_id      = var.ami_id
-  instance_type = var.instance_type
+  name_prefix            = "${var.name}-"
+  image_id               = var.ami_id
+  instance_type          = var.instance_type
   vpc_security_group_ids = [aws_security_group.instance.id]
 
   # user_data thay cho provisioner: cài nginx lúc boot (bài 17).

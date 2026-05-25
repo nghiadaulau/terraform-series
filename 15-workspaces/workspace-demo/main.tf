@@ -20,6 +20,6 @@ resource "aws_s3_bucket" "app" {
   }
 }
 
-output "workspace"     { value = terraform.workspace }
-output "bucket"        { value = aws_s3_bucket.app.id }
+output "workspace" { value = terraform.workspace }
+output "bucket" { value = aws_s3_bucket.app.id }
 output "instance_type" { value = local.instance_type }

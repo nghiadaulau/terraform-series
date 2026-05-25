@@ -1,15 +1,17 @@
 name: terraform
 
-# plan trên pull request, apply khi merge vào production.
+# Quality gate chạy trên mọi push/PR (không cần AWS).
+# Các job plan/apply CHỈ chạy khi đã cấu hình repo variable AWS_ROLE_ARN
+# (Settings -> Secrets and variables -> Actions -> Variables) trỏ tới IAM role
+# tin GitHub OIDC. Chưa cấu hình thì chúng được bỏ qua, pipeline vẫn xanh.
 on:
   pull_request:
     branches: [production]
   push:
     branches: [production]
 
-# OIDC: cấp id-token để đổi lấy credential AWS tạm thời, KHÔNG lưu access key.
 permissions:
-  id-token: write
+  id-token: write # cho OIDC ở job plan/apply
   contents: read
   pull-requests: write
 
@@ -19,7 +21,8 @@ env:
   WORKING_DIR: "14-vpc-module"
 
 jobs:
-  # Gate chất lượng: fmt, validate, tflint, Trivy, Checkov — chạy trên mọi PR.
+  # Gate chất lượng — fmt/validate/tflint là gate cứng; Trivy/Checkov chạy
+  # report-only (code bài 14 cố tình có lỗ hổng để minh hoạ ở bài 18).
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -43,45 +46,45 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
         run: tflint
 
-      - name: Trivy config scan
+      - name: Trivy config scan (report-only)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: config
           scan-ref: ${{ env.WORKING_DIR }}
-          severity: HIGH,CRITICAL # chỉ chặn ở mức cao
+          severity: HIGH,CRITICAL
+          exit-code: "0" # report-only: không chặn build
 
-      - name: Checkov
+      - name: Checkov (report-only)
         uses: bridgecrewio/checkov-action@master
         with:
           directory: ${{ env.WORKING_DIR }}
+          soft_fail: true # report-only: không chặn build
 
-  # plan trên PR: kết quả đính vào PR để review.
+  # plan trên PR — chỉ chạy khi đã cấu hình AWS_ROLE_ARN.
   plan:
     needs: quality
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' && vars.AWS_ROLE_ARN != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
       - name: Lấy credential AWS qua OIDC (không dùng access key)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} # role tin GitHub OIDC
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: terraform plan
         working-directory: ${{ env.WORKING_DIR }}
         run: |
           terraform init
           terraform plan -out=tfplan -no-color
 
-  # apply khi merge vào production.
+  # apply khi merge vào production — chỉ chạy khi đã cấu hình AWS_ROLE_ARN.
   apply:
     needs: quality
-    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/production' && vars.AWS_ROLE_ARN != '' }}
     runs-on: ubuntu-latest
     environment: production # cổng phê duyệt thủ công của GitHub Environments
     steps:
@@ -89,13 +92,11 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-
       - name: Lấy credential AWS qua OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: terraform apply
         working-directory: ${{ env.WORKING_DIR }}
         run: |
